@@ -1,12 +1,12 @@
 import requests
 import asyncio
-import time
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 TELEGRAM_TOKEN = "8807718291:AAH5Ytj7tHmvAQgepKdjacR-Smn_73sxngY"
 TELEGRAM_CHAT_ID = "7056939861"
+HELIUS_API_KEY = "5ddc9539-90ae-419b-8ab1-fc1677cdb01e"
 
 WALLETS = {
     "Stigman": "8fsKLLtvKNanL4ginCaiRS6UfeemY11rSf8U8fN1dJw4",
@@ -14,61 +14,75 @@ WALLETS = {
 }
 
 bot_aktif = True
-tx_history = {}
+tx_history = {wallet: set() for wallet in WALLETS.values()}
 
-def get_wallet_transactions(wallet):
-    url = f"https://api.solscan.io/api/v2/account/transactions?account={wallet}&limit=10"
+def get_transactions(wallet):
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=10"
     try:
         r = requests.get(url, timeout=10)
-        data = r.json()
-        if data.get("success"):
-            return data.get("data", {}).get("tx", [])
-        return []
+        return r.json()
     except:
         return []
 
-def parse_transaction(tx_data):
+def parse_tx(tx, name):
     try:
-        if not tx_data:
-            return None
-        sig = tx_data.get("txHash", "")
-        action = tx_data.get("type", "UNKNOWN")
-        token = tx_data.get("tokenSymbol", "UNKNOWN") or tx_data.get("symbol", "UNKNOWN")
-        amount = tx_data.get("amount", "?")
-        
-        if action not in ["SWAP", "BUY", "SELL"]:
-            return None
-        
-        return {"tx": sig, "action": action, "token": token, "amount": amount}
+        sig = tx.get("signature", "")
+        tx_type = tx.get("type", "UNKNOWN")
+        desc = tx.get("description", "")
+
+        if tx_type in ["SWAP", "TRANSFER", "TOKEN_MINT"]:
+            token = "UNKNOWN"
+            amount = "?"
+
+            token_transfers = tx.get("tokenTransfers", [])
+            if token_transfers:
+                token = token_transfers[0].get("mint", "UNKNOWN")[-6:]
+                amount = token_transfers[0].get("tokenAmount", "?")
+
+            native = tx.get("nativeTransfers", [])
+            sol_amount = "?"
+            if native:
+                sol_amount = round(native[0].get("amount", 0) / 1e9, 4)
+
+            return {
+                "sig": sig,
+                "type": tx_type,
+                "token": token,
+                "amount": sol_amount,
+                "desc": desc
+            }
+        return None
     except:
         return None
 
 async def monitor_wallets(app):
-    global bot_aktif
     while True:
         try:
             if not bot_aktif:
                 await asyncio.sleep(10)
                 continue
+
             for name, wallet in WALLETS.items():
-                txs = get_wallet_transactions(wallet)
-                if wallet not in tx_history:
-                    tx_history[wallet] = []
+                txs = get_transactions(wallet)
+                if not txs or not isinstance(txs, list):
+                    continue
+
                 for tx in txs[:5]:
-                    tx_hash = tx.get("txHash", "")
-                    if tx_hash not in tx_history[wallet]:
-                        parsed = parse_transaction(tx)
+                    sig = tx.get("signature", "")
+                    if sig and sig not in tx_history[wallet]:
+                        parsed = parse_tx(tx, name)
                         if parsed:
                             pesan = f"""🚨 Wallet Activity
 
 Wallet: {name}
-Action: {parsed['action']}
+Action: {parsed['type']}
 Token: {parsed['token']}
 Amount: {parsed['amount']} SOL
 
-Tx: https://solscan.io/tx/{parsed['tx']}"""
+Tx: https://solscan.io/tx/{parsed['sig']}"""
                             await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=pesan)
-                            tx_history[wallet].append(tx_hash)
+                        tx_history[wallet].add(sig)
+
             await asyncio.sleep(30)
         except Exception as e:
             print(f"Error: {e}")
