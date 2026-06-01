@@ -127,7 +127,7 @@ async def monitor_wallets(app):
                         parsed = parse_tx(tx)
                         if parsed:
                             token_name, price, mcap = get_token_info(parsed["mint"])
-                            waktu = datetime.now().strftime("%H:%M:%S")
+                            waktu = datetime.utcnow().strftime("%H:%M:%S") + " UTC (" + (datetime.utcnow().replace(hour=(datetime.utcnow().hour+7)%24)).strftime("%H:%M") + " WIB)"
 
                             if parsed["action"] == "BUY":
                                 emoji = "🟢"
