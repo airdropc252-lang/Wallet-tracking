@@ -13,10 +13,42 @@ WALLETS = {
     "Cupseyy": "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"
 }
 
-STABLE_TOKENS = ["So11111111111111111111111111111111111111112", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]
+STABLE_TOKENS = [
+    "So11111111111111111111111111111111111111112",
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+]
 
 bot_aktif = True
 tx_history = {wallet: set() for wallet in WALLETS.values()}
+
+def get_token_info(mint):
+    try:
+        url = f"https://api.dexscreener.com/tokens/v1/solana/{mint}"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0:
+            pair = data[0]
+            name = pair.get("baseToken", {}).get("symbol", "UNKNOWN")
+            price = float(pair.get("priceUsd", 0))
+            mcap = pair.get("marketCap", 0)
+            return name, price, mcap
+    except:
+        pass
+    return "UNKNOWN", 0, 0
+
+def format_mcap(mcap):
+    try:
+        mcap = float(mcap)
+        if mcap >= 1_000_000_000:
+            return f"${mcap/1_000_000_000:.2f}B"
+        elif mcap >= 1_000_000:
+            return f"${mcap/1_000_000:.2f}M"
+        elif mcap >= 1_000:
+            return f"${mcap/1_000:.2f}K"
+        return f"${mcap:.2f}"
+    except:
+        return "?"
 
 def get_transactions(wallet):
     url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=10"
@@ -36,6 +68,7 @@ def parse_tx(tx):
 
         token_transfers = tx.get("tokenTransfers", [])
         native_transfers = tx.get("nativeTransfers", [])
+        fee_payer = tx.get("feePayer", "")
 
         token_in = None
         token_out = None
@@ -45,29 +78,31 @@ def parse_tx(tx):
         for t in token_transfers:
             mint = t.get("mint", "")
             amount = t.get("tokenAmount", 0)
-            if t.get("toUserAccount") == tx.get("feePayer"):
+            if t.get("toUserAccount") == fee_payer:
                 token_in = mint
                 amount_in = amount
-            elif t.get("fromUserAccount") == tx.get("feePayer"):
+            elif t.get("fromUserAccount") == fee_payer:
                 token_out = mint
                 amount_out = amount
 
-        sol_in = sum(t.get("amount", 0) for t in native_transfers if t.get("toUserAccount") == tx.get("feePayer")) / 1e9
-        sol_out = sum(t.get("amount", 0) for t in native_transfers if t.get("fromUserAccount") == tx.get("feePayer")) / 1e9
+        sol_in = sum(t.get("amount", 0) for t in native_transfers if t.get("toUserAccount") == fee_payer) / 1e9
+        sol_out = sum(t.get("amount", 0) for t in native_transfers if t.get("fromUserAccount") == fee_payer) / 1e9
 
         if sol_out > 0.001 and token_in and token_in not in STABLE_TOKENS:
             return {
                 "sig": sig,
                 "action": "BUY",
-                "token": token_in[-6:],
-                "sol": round(sol_out, 4)
+                "mint": token_in,
+                "sol": round(sol_out, 4),
+                "amount": amount_in
             }
-        elif token_out and token_out not in STABLE_TOKENS and (sol_in > 0.001 or token_in in STABLE_TOKENS):
+        elif token_out and token_out not in STABLE_TOKENS and (sol_in > 0.001 or (token_in and token_in in STABLE_TOKENS)):
             return {
                 "sig": sig,
                 "action": "SELL",
-                "token": token_out[-6:],
-                "sol": round(sol_in, 4) if sol_in > 0 else round(float(amount_in), 4)
+                "mint": token_out,
+                "sol": round(sol_in, 4) if sol_in > 0 else "?",
+                "amount": amount_out
             }
 
         return None
@@ -91,22 +126,33 @@ async def monitor_wallets(app):
                     if sig and sig not in tx_history[wallet]:
                         parsed = parse_tx(tx)
                         if parsed:
-                            if parsed["action"] == "BUY":
-                                emoji = "🟢🚀"
-                                action_text = "BUY"
-                            else:
-                                emoji = "🔴💰"
-                                action_text = "SELL"
-
+                            token_name, price, mcap = get_token_info(parsed["mint"])
                             waktu = datetime.now().strftime("%H:%M:%S")
-                            pesan = f"""{emoji} *Wallet Alert!*
 
+                            if parsed["action"] == "BUY":
+                                emoji = "🟢"
+                                action_text = "BUY 🚀"
+                                sol_text = f"Spent: {parsed['sol']} SOL"
+                            else:
+                                emoji = "🔴"
+                                action_text = "SELL 💰"
+                                sol_text = f"Received: {parsed['sol']} SOL"
+
+                            amount_fmt = f"{float(parsed['amount']):,.0f}" if parsed['amount'] else "?"
+                            price_fmt = f"${price:.8f}" if price > 0 else "?"
+                            mcap_fmt = format_mcap(mcap)
+
+                            pesan = f"""{emoji} *Wallet Alert!*
+━━━━━━━━━━━━━━━
 👤 *Wallet:* {name}
 📊 *Action:* {action_text}
-🪙 *Token:* ...{parsed['token']}
-💵 *SOL:* {parsed['sol']} SOL
+🪙 *Token:* {token_name}
+📦 *Amount:* {amount_fmt} {token_name}
+💵 *{sol_text}*
+💲 *Price:* {price_fmt}
+📈 *MCap:* {mcap_fmt}
 🕐 *Time:* {waktu}
-
+━━━━━━━━━━━━━━━
 🔗 [Lihat Transaksi](https://solscan.io/tx/{parsed['sig']})"""
 
                             await app.bot.send_message(
@@ -124,6 +170,7 @@ async def monitor_wallets(app):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Aktif" if bot_aktif else "⛔ Berhenti"
     pesan = f"👁️ *Wallet Tracker*: {status}\n\n"
+    pesan += "🐋 *Wallet yang dimonitor:*\n"
     for name in WALLETS.keys():
         pesan += f"• {name}\n"
     await update.message.reply_text(pesan, parse_mode="Markdown")
@@ -147,9 +194,11 @@ async def main():
     async with app:
         await app.start()
         await app.updater.start_polling()
-        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID,
-            text="👁️ *Wallet Tracker AKTIF!*\n\nMonitoring:\n• Stigman 🐋\n• Cupseyy 🐋\n\n/status /start /stop",
-            parse_mode="Markdown")
+        await app.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text="👁️ *Wallet Tracker AKTIF!*\n\n🐋 Monitoring:\n• Stigman\n• Cupseyy\n\n/status /start /stop",
+            parse_mode="Markdown"
+        )
         await monitor_wallets(app)
         await app.updater.stop()
         await app.stop()
