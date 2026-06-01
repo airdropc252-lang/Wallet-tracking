@@ -32,9 +32,13 @@ def parse_transaction(tx_data):
         if not tx_data:
             return None
         sig = tx_data.get("txHash", "")
-        action = "SELL" if tx_data.get("spl") and tx_data.get("token") else "BUY"
-        token = tx_data.get("token_symbol", "UNKNOWN")
+        action = tx_data.get("type", "UNKNOWN")
+        token = tx_data.get("tokenSymbol", "UNKNOWN") or tx_data.get("symbol", "UNKNOWN")
         amount = tx_data.get("amount", "?")
+        
+        if action not in ["SWAP", "BUY", "SELL"]:
+            return None
+        
         return {"tx": sig, "action": action, "token": token, "amount": amount}
     except:
         return None
