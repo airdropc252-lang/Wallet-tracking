@@ -5,7 +5,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-TELEGRAM_TOKEN = "8807718291:AAGEjy4sbkDocV-GOhmuilEzIcGZVPRwmvU"
+TELEGRAM_TOKEN = "8807718291:AAH5Ytj7tHmvAQgepKdjacR-Smn_73sxngY"
 TELEGRAM_CHAT_ID = "7056939861"
 
 WALLETS = {
