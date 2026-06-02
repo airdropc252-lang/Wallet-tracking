@@ -19,8 +19,27 @@ STABLE_TOKENS = [
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 ]
 
+MIN_USD = 50
 bot_aktif = True
 tx_history = {wallet: set() for wallet in WALLETS.values()}
+sol_price_cache = {"price": 150, "last_update": 0}
+
+def get_sol_price():
+    try:
+        now = datetime.utcnow().timestamp()
+        if now - sol_price_cache["last_update"] < 300:
+            return sol_price_cache["price"]
+        url = "https://api.dexscreener.com/tokens/v1/solana/So11111111111111111111111111111111111111112"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if isinstance(data, list) and len(data) > 0:
+            price = float(data[0].get("priceUsd", 150))
+            sol_price_cache["price"] = price
+            sol_price_cache["last_update"] = now
+            return price
+    except:
+        pass
+    return sol_price_cache["price"]
 
 def get_token_info(mint):
     try:
@@ -62,7 +81,6 @@ def parse_tx(tx):
     try:
         sig = tx.get("signature", "")
         tx_type = tx.get("type", "")
-
         if tx_type != "SWAP":
             return None
 
@@ -88,22 +106,13 @@ def parse_tx(tx):
         sol_in = sum(t.get("amount", 0) for t in native_transfers if t.get("toUserAccount") == fee_payer) / 1e9
         sol_out = sum(t.get("amount", 0) for t in native_transfers if t.get("fromUserAccount") == fee_payer) / 1e9
 
-        if sol_out > 0.001 and token_in and token_in not in STABLE_TOKENS:
-            return {
-                "sig": sig,
-                "action": "BUY",
-                "mint": token_in,
-                "sol": round(sol_out, 4),
-                "amount": amount_in
-            }
-        elif token_out and token_out not in STABLE_TOKENS and (sol_in > 0.001 or (token_in and token_in in STABLE_TOKENS)):
-            return {
-                "sig": sig,
-                "action": "SELL",
-                "mint": token_out,
-                "sol": round(sol_in, 4) if sol_in > 0 else "?",
-                "amount": amount_out
-            }
+        sol_price = get_sol_price()
+        min_sol = MIN_USD / sol_price
+
+        if sol_out > min_sol and token_in and token_in not in STABLE_TOKENS:
+            return {"sig": sig, "action": "BUY", "mint": token_in, "sol": round(sol_out, 4), "amount": amount_in, "usd": round(sol_out * sol_price, 2)}
+        elif token_out and token_out not in STABLE_TOKENS and (sol_in > min_sol or (token_in and token_in in STABLE_TOKENS)):
+            return {"sig": sig, "action": "SELL", "mint": token_out, "sol": round(sol_in, 4), "amount": amount_out, "usd": round(sol_in * sol_price, 2)}
 
         return None
     except:
@@ -127,16 +136,18 @@ async def monitor_wallets(app):
                         parsed = parse_tx(tx)
                         if parsed:
                             token_name, price, mcap = get_token_info(parsed["mint"])
-                            waktu = datetime.utcnow().strftime("%H:%M:%S") + " UTC (" + (datetime.utcnow().replace(hour=(datetime.utcnow().hour+7)%24)).strftime("%H:%M") + " WIB)"
+                            utc_time = datetime.utcnow()
+                            wib_hour = (utc_time.hour + 7) % 24
+                            waktu = f"{utc_time.strftime('%H:%M:%S')} UTC ({wib_hour:02d}:{utc_time.strftime('%M')} WIB)"
 
                             if parsed["action"] == "BUY":
                                 emoji = "🟢"
                                 action_text = "BUY 🚀"
-                                sol_text = f"Spent: {parsed['sol']} SOL"
+                                sol_text = f"Spent: {parsed['sol']} SOL (≈${parsed['usd']})"
                             else:
                                 emoji = "🔴"
                                 action_text = "SELL 💰"
-                                sol_text = f"Received: {parsed['sol']} SOL"
+                                sol_text = f"Received: {parsed['sol']} SOL (≈${parsed['usd']})"
 
                             amount_fmt = f"{float(parsed['amount']):,.0f}" if parsed['amount'] else "?"
                             price_fmt = f"${price:.8f}" if price > 0 else "?"
@@ -153,7 +164,7 @@ async def monitor_wallets(app):
 📈 *MCap:* {mcap_fmt}
 🕐 *Time:* {waktu}
 ━━━━━━━━━━━━━━━
-🔗 [Lihat Transaksi](https://solscan.io/tx/{parsed['sig']})"""
+🔗 [Lihat TX](https://solscan.io/tx/{parsed['sig']}) | 📊 [Chart](https://dexscreener.com/solana/{parsed['mint']})"""
 
                             await app.bot.send_message(
                                 chat_id=TELEGRAM_CHAT_ID,
@@ -168,9 +179,12 @@ async def monitor_wallets(app):
             await asyncio.sleep(10)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sol_price = get_sol_price()
     status = "✅ Aktif" if bot_aktif else "⛔ Berhenti"
     pesan = f"👁️ *Wallet Tracker*: {status}\n\n"
-    pesan += "🐋 *Wallet yang dimonitor:*\n"
+    pesan += f"💲 *SOL Price:* ${sol_price:.2f}\n"
+    pesan += f"🎯 *Min Trade:* ${MIN_USD} (~{round(MIN_USD/sol_price, 3)} SOL)\n\n"
+    pesan += "🐋 *Monitoring:*\n"
     for name in WALLETS.keys():
         pesan += f"• {name}\n"
     await update.message.reply_text(pesan, parse_mode="Markdown")
@@ -194,9 +208,10 @@ async def main():
     async with app:
         await app.start()
         await app.updater.start_polling()
+        sol_price = get_sol_price()
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text="👁️ *Wallet Tracker AKTIF!*\n\n🐋 Monitoring:\n• Stigman\n• Cupseyy\n\n/status /start /stop",
+            text=f"👁️ *Wallet Tracker AKTIF!*\n\n🐋 Monitoring:\n• Stigman\n• Cupseyy\n\n💲 SOL: ${sol_price:.2f}\n🎯 Min trade: ${MIN_USD}\n\n/status /start /stop",
             parse_mode="Markdown"
         )
         await monitor_wallets(app)
