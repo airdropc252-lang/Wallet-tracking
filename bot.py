@@ -8,38 +8,45 @@ TELEGRAM_TOKEN = "8807718291:AAH5Ytj7tHmvAQgepKdjacR-Smn_73sxngY"
 TELEGRAM_CHAT_ID = "-1003734394227"
 HELIUS_API_KEY = "5ddc9539-90ae-419b-8ab1-fc1677cdb01e"
 
-WALLETS = {
-    "Stigman": "8fsKLLtvKNanL4ginCaiRS6UfeemY11rSf8U8fN1dJw4",
-    "Cupseyy": "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f"
-}
+MIN_WINRATE = 65
+MIN_PROFIT = 5000
+MIN_TRADES = 10
+MIN_SOL_TRADE = 1.0
 
-STABLE_TOKENS = [
-    "So11111111111111111111111111111111111111112",
-    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-]
-
-MIN_USD = 50
 bot_aktif = True
-tx_history = {wallet: set() for wallet in WALLETS.values()}
-sol_price_cache = {"price": 150, "last_update": 0}
+whale_list = {}
+notified_tx = set()
+
+KNOWN_MEME_TOKENS = [
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+    "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+    "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
+]
 
 def get_sol_price():
     try:
-        now = datetime.utcnow().timestamp()
-        if now - sol_price_cache["last_update"] < 300:
-            return sol_price_cache["price"]
         url = "https://api.dexscreener.com/tokens/v1/solana/So11111111111111111111111111111111111111112"
         r = requests.get(url, timeout=10)
         data = r.json()
         if isinstance(data, list) and len(data) > 0:
-            price = float(data[0].get("priceUsd", 150))
-            sol_price_cache["price"] = price
-            sol_price_cache["last_update"] = now
-            return price
+            return float(data[0].get("priceUsd", 150))
     except:
         pass
-    return sol_price_cache["price"]
+    return 150
+
+def get_trending_tokens():
+    try:
+        url = "https://api.dexscreener.com/token-boosts/top/v1"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        tokens = []
+        if isinstance(data, list):
+            for item in data[:20]:
+                if item.get("chainId") == "solana":
+                    tokens.append(item.get("tokenAddress"))
+        return tokens
+    except:
+        return KNOWN_MEME_TOKENS
 
 def get_token_info(mint):
     try:
@@ -48,10 +55,10 @@ def get_token_info(mint):
         data = r.json()
         if isinstance(data, list) and len(data) > 0:
             pair = data[0]
-            name = pair.get("baseToken", {}).get("symbol", "UNKNOWN")
+            symbol = pair.get("baseToken", {}).get("symbol", "UNKNOWN")
             price = float(pair.get("priceUsd", 0))
             mcap = pair.get("marketCap", 0)
-            return name, price, mcap
+            return symbol, price, mcap
     except:
         pass
     return "UNKNOWN", 0, 0
@@ -69,138 +76,187 @@ def format_mcap(mcap):
     except:
         return "?"
 
-def get_transactions(wallet):
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=10"
+def get_token_traders(mint):
     try:
+        url = f"https://api.helius.xyz/v0/addresses/{mint}/transactions?api-key={HELIUS_API_KEY}&limit=50&type=SWAP"
         r = requests.get(url, timeout=10)
         return r.json()
     except:
         return []
 
-def parse_tx(tx):
+def analyze_wallet(wallet, txs, sol_price):
+    wins = 0
+    losses = 0
+    total_profit = 0
+
+    for tx in txs:
+        if tx.get("feePayer") != wallet:
+            continue
+        native = tx.get("nativeTransfers", [])
+        sol_in = sum(t.get("amount", 0) for t in native if t.get("toUserAccount") == wallet) / 1e9
+        sol_out = sum(t.get("amount", 0) for t in native if t.get("fromUserAccount") == wallet) / 1e9
+        pnl = (sol_in - sol_out) * sol_price
+        if pnl > 0:
+            wins += 1
+            total_profit += pnl
+        elif pnl < 0:
+            losses += 1
+
+    total = wins + losses
+    if total < MIN_TRADES:
+        return None
+
+    winrate = (wins / total) * 100
+    if winrate < MIN_WINRATE:
+        return None
+    if total_profit < MIN_PROFIT:
+        return None
+
+    return {
+        "winrate": round(winrate, 1),
+        "profit": round(total_profit, 0),
+        "wins": wins,
+        "losses": losses
+    }
+
+def get_latest_swap(wallet):
     try:
-        sig = tx.get("signature", "")
-        tx_type = tx.get("type", "")
-        if tx_type != "SWAP":
-            return None
-
-        token_transfers = tx.get("tokenTransfers", [])
-        native_transfers = tx.get("nativeTransfers", [])
-        fee_payer = tx.get("feePayer", "")
-
-        token_in = None
-        token_out = None
-        amount_in = 0
-        amount_out = 0
-
-        for t in token_transfers:
-            mint = t.get("mint", "")
-            amount = t.get("tokenAmount", 0)
-            if t.get("toUserAccount") == fee_payer:
-                token_in = mint
-                amount_in = amount
-            elif t.get("fromUserAccount") == fee_payer:
-                token_out = mint
-                amount_out = amount
-
-        sol_in = sum(t.get("amount", 0) for t in native_transfers if t.get("toUserAccount") == fee_payer) / 1e9
-        sol_out = sum(t.get("amount", 0) for t in native_transfers if t.get("fromUserAccount") == fee_payer) / 1e9
-
-        sol_price = get_sol_price()
-        min_sol = MIN_USD / sol_price
-
-        if sol_out > min_sol and token_in and token_in not in STABLE_TOKENS:
-            return {"sig": sig, "action": "BUY", "mint": token_in, "sol": round(sol_out, 4), "amount": amount_in, "usd": round(sol_out * sol_price, 2)}
-        elif token_out and token_out not in STABLE_TOKENS and (sol_in > min_sol or (token_in and token_in in STABLE_TOKENS)):
-            return {"sig": sig, "action": "SELL", "mint": token_out, "sol": round(sol_in, 4), "amount": amount_out, "usd": round(sol_in * sol_price, 2)}
-
-        return None
+        url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=5&type=SWAP"
+        r = requests.get(url, timeout=10)
+        txs = r.json()
+        if txs and isinstance(txs, list):
+            return txs[0]
     except:
-        return None
+        pass
+    return None
 
-async def monitor_wallets(app):
+async def scan_whales(app):
+    global bot_aktif
+    sol_price = get_sol_price()
+
     while True:
         try:
             if not bot_aktif:
-                await asyncio.sleep(10)
+                await asyncio.sleep(30)
                 continue
 
-            for name, wallet in WALLETS.items():
-                txs = get_transactions(wallet)
+            tokens = get_trending_tokens()
+            print(f"Scanning {len(tokens)} trending tokens...")
+
+            for mint in tokens:
+                txs = get_token_traders(mint)
                 if not txs or not isinstance(txs, list):
                     continue
 
-                for tx in txs[:5]:
-                    sig = tx.get("signature", "")
-                    if sig and sig not in tx_history[wallet]:
-                        parsed = parse_tx(tx)
-                        if parsed:
-                            token_name, price, mcap = get_token_info(parsed["mint"])
-                            utc_time = datetime.utcnow()
-                            wib_hour = (utc_time.hour + 7) % 24
-                            waktu = f"{utc_time.strftime('%H:%M:%S')} UTC ({wib_hour:02d}:{utc_time.strftime('%M')} WIB)"
+                wallets_seen = set()
+                for tx in txs:
+                    wallet = tx.get("feePayer", "")
+                    if not wallet or wallet in wallets_seen:
+                        continue
+                    wallets_seen.add(wallet)
 
-                            if parsed["action"] == "BUY":
-                                emoji = "🟢"
-                                action_text = "BUY 🚀"
-                                sol_text = f"Spent: {parsed['sol']} SOL (≈${parsed['usd']})"
-                            else:
-                                emoji = "🔴"
-                                action_text = "SELL 💰"
-                                sol_text = f"Received: {parsed['sol']} SOL (≈${parsed['usd']})"
+                    stats = analyze_wallet(wallet, txs, sol_price)
+                    if not stats:
+                        continue
 
-                            amount_fmt = f"{float(parsed['amount']):,.0f}" if parsed['amount'] else "?"
-                            price_fmt = f"${price:.8f}" if price > 0 else "?"
-                            mcap_fmt = format_mcap(mcap)
+                    latest = get_latest_swap(wallet)
+                    if not latest:
+                        continue
 
-                            pesan = f"""{emoji} *Wallet Alert!*
+                    sig = latest.get("signature", "")
+                    if sig in notified_tx:
+                        continue
+
+                    token_transfers = latest.get("tokenTransfers", [])
+                    native_transfers = latest.get("nativeTransfers", [])
+
+                    token_in = None
+                    amount_in = 0
+                    sol_out = sum(t.get("amount", 0) for t in native_transfers if t.get("fromUserAccount") == wallet) / 1e9
+                    sol_in = sum(t.get("amount", 0) for t in native_transfers if t.get("toUserAccount") == wallet) / 1e9
+
+                    for t in token_transfers:
+                        if t.get("toUserAccount") == wallet:
+                            token_in = t.get("mint")
+                            amount_in = t.get("tokenAmount", 0)
+
+                    if sol_out > MIN_SOL_TRADE and token_in:
+                        action = "BUY 🚀"
+                        emoji = "🟢"
+                        sol_amt = round(sol_out, 4)
+                        usd_amt = round(sol_out * sol_price, 2)
+                    elif sol_in > MIN_SOL_TRADE:
+                        action = "SELL 💰"
+                        emoji = "🔴"
+                        sol_amt = round(sol_in, 4)
+                        usd_amt = round(sol_in * sol_price, 2)
+                    else:
+                        continue
+
+                    token_name, price, mcap = get_token_info(token_in or mint)
+                    amount_fmt = f"{float(amount_in):,.0f}" if amount_in else "?"
+                    price_fmt = f"${price:.8f}" if price > 0 else "?"
+                    mcap_fmt = format_mcap(mcap)
+                    wallet_short = f"{wallet[:4]}...{wallet[-4:]}"
+
+                    utc_time = datetime.utcnow()
+                    wib_hour = (utc_time.hour + 7) % 24
+                    waktu = f"{utc_time.strftime('%H:%M:%S')} UTC ({wib_hour:02d}:{utc_time.strftime('%M')} WIB)"
+
+                    pesan = f"""🐋 *Whale Alert!*
 ━━━━━━━━━━━━━━━
-👤 *Wallet:* {name}
-📊 *Action:* {action_text}
+👤 *Wallet:* `{wallet_short}`
+🏆 *Winrate:* {stats['winrate']}%
+💰 *Total Profit:* ${stats['profit']:,.0f}
+📊 *Trades:* {stats['wins']} win / {stats['losses']} loss
+━━━━━━━━━━━━━━━
+{emoji} *Action:* {action}
 🪙 *Token:* {token_name}
 📦 *Amount:* {amount_fmt} {token_name}
-💵 *{sol_text}*
+💵 *SOL:* {sol_amt} SOL (≈${usd_amt})
 💲 *Price:* {price_fmt}
 📈 *MCap:* {mcap_fmt}
 🕐 *Time:* {waktu}
 ━━━━━━━━━━━━━━━
-🔗 [Lihat TX](https://solscan.io/tx/{parsed['sig']}) | 📊 [Chart](https://dexscreener.com/solana/{parsed['mint']})"""
+🔗 [Solscan](https://solscan.io/tx/{sig}) | 📊 [DexScreener](https://dexscreener.com/solana/{token_in or mint})"""
 
-                            await app.bot.send_message(
-                                chat_id=TELEGRAM_CHAT_ID,
-                                text=pesan,
-                                parse_mode="Markdown"
-                            )
-                        tx_history[wallet].add(sig)
+                    await app.bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=pesan,
+                        parse_mode="Markdown"
+                    )
+                    notified_tx.add(sig)
+                    whale_list[wallet] = stats
 
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)
+
         except Exception as e:
             print(f"Error: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(30)
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sol_price = get_sol_price()
     status = "✅ Aktif" if bot_aktif else "⛔ Berhenti"
-    pesan = f"👁️ *Wallet Tracker*: {status}\n\n"
-    pesan += f"💲 *SOL Price:* ${sol_price:.2f}\n"
-    pesan += f"🎯 *Min Trade:* ${MIN_USD} (~{round(MIN_USD/sol_price, 3)} SOL)\n\n"
-    pesan += "🐋 *Monitoring:*\n"
-    for name in WALLETS.keys():
-        pesan += f"• {name}\n"
+    sol_price = get_sol_price()
+    pesan = f"🐋 *Whale Screener*: {status}\n\n"
+    pesan += f"💲 *SOL:* ${sol_price:.2f}\n"
+    pesan += f"🏆 *Min Winrate:* {MIN_WINRATE}%\n"
+    pesan += f"💰 *Min Profit:* ${MIN_PROFIT:,}\n"
+    pesan += f"📊 *Min Trades:* {MIN_TRADES}x\n\n"
+    pesan += f"🐋 *Whales ditemukan:* {len(whale_list)}"
     await update.message.reply_text(pesan, parse_mode="Markdown")
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_aktif
     bot_aktif = True
-    await update.message.reply_text("✅ Bot aktif!")
+    await update.message.reply_text("✅ Whale Screener aktif!")
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_aktif
     bot_aktif = False
-    await update.message.reply_text("⛔ Bot berhenti!")
+    await update.message.reply_text("⛔ Whale Screener berhenti!")
 
 async def main():
-    print("Wallet Tracker Bot")
+    print("Whale Screener Bot")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("start", cmd_start))
@@ -208,13 +264,12 @@ async def main():
     async with app:
         await app.start()
         await app.updater.start_polling()
-        sol_price = get_sol_price()
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text=f"👁️ *Wallet Tracker AKTIF!*\n\n🐋 Monitoring:\n• Stigman\n• Cupseyy\n\n💲 SOL: ${sol_price:.2f}\n🎯 Min trade: ${MIN_USD}\n\n/status /start /stop",
+            text="🐋 *Whale Screener AKTIF!*\n\nScan otomatis whale meme Solana!\n\n🏆 Min Winrate: 65%\n💰 Min Profit: $5,000\n📊 Min Trades: 10x\n\n/status /start /stop",
             parse_mode="Markdown"
         )
-        await monitor_wallets(app)
+        await scan_whales(app)
         await app.updater.stop()
         await app.stop()
 
