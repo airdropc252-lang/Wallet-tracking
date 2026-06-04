@@ -1,6 +1,6 @@
 import requests
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
