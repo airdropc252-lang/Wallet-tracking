@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 TELEGRAM_TOKEN = "8807718291:AAHMFi4-wwsfbICu49XkIA4fHP5w4lE_cUk"
 TELEGRAM_CHAT_ID = "-1003734394227"
-HELIUS_API_KEY = "5ddc9539-90ae-419b-8ab1-fc1677cdb01e"
+HELIUS_API_KEY = "788a84fa-9b6d-4206-9689-22400d11ca25"
 
 WALLETS = {
     "Stigman": "8fsKLLtvKNanL4ginCaiRS6UfeemY11rSf8U8fN1dJw4",
