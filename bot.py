@@ -1,6 +1,6 @@
 import requests
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -27,7 +27,7 @@ sol_price_cache = {"price": 150, "last_update": 0}
 
 def get_sol_price():
     try:
-        now = datetime.utcnow().timestamp()
+        now = datetime.now(datetime.timezone.utc).timestamp()
         if now - sol_price_cache["last_update"] < 300:
             return sol_price_cache["price"]
         url = "https://api.dexscreener.com/tokens/v1/solana/So11111111111111111111111111111111111111112"
@@ -137,7 +137,7 @@ async def monitor_wallets(app):
                         parsed = parse_tx(tx)
                         if parsed:
                             token_name, price, mcap = get_token_info(parsed["mint"])
-                            utc_time = datetime.utcnow()
+                            utc_time = datetime.now(datetime.timezone.utc)
                             wib_hour = (utc_time.hour + 7) % 24
                             waktu = f"{utc_time.strftime('%H:%M:%S')} UTC ({wib_hour:02d}:{utc_time.strftime('%M')} WIB)"
 
@@ -220,3 +220,4 @@ async def main():
         await app.stop()
 
 asyncio.run(main())
+
