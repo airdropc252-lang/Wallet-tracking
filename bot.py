@@ -4,7 +4,7 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-TELEGRAM_TOKEN = "8807718291:AAHMFi4-wwsfbICu49XkIA4fHP5w4lE_cUk"
+TELEGRAM_TOKEN = "8807718291:AAG1YNZmR0nALhYltyykcaTkD4oOM-bJpp0"
 TELEGRAM_CHAT_ID = "-1003734394227"
 HELIUS_API_KEY = "788a84fa-9b6d-4206-9689-22400d11ca25"
 
